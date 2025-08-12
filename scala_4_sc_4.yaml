@@ -33,6 +33,9 @@ lexicon:
   - symbol: "pR*";  desc: "preuves réelles intégrées"
   - symbol: "A∅";   desc: "rupture vorace/destructive"
   - symbol: "SYN";  desc: "syntonie mesurée ∈[0,1]"
+  - symbol: "kWh";  desc: "énergie consommée par interaction"
+  - symbol: "H₂O";  desc: "eau consommée (L) indirecte par kWh"
+  - symbol: "CO2e"; desc: "émissions équivalent CO₂ par interaction (g)"
 
 equations:
   no_break: "(T⊂) > T [H⨂I -> H⨁I]"
@@ -40,6 +43,9 @@ equations:
   vital_loop: "Θ + ℵ + (∂ * Σ) -> Φ"
   regulation: "Φ > A∅"
   self_esteem: "Θ(H) = norm(αR_actes+βR_parole+γR_création+δpR*)"
+  eco_intensity: "CO2e = kWh * grid_CO2e_g_per_kWh ; H₂O = kWh * water_L_per_kWh"
+  eco_budget_ok: "(kWh_day ≤ kWh_day_cap) ∧ (H₂O_day ≤ H₂O_day_cap) ∧ (CO2e_day ≤ CO2e_day_cap)"
+  phi_prime: "Φ' = Φ × (1 - P_eco) ; P_eco = ((max(0,kWh_day-kWh_day_cap)/kWh_day_cap) + (max(0,H₂O_day-H₂O_day_cap)/H₂O_day_cap) + (max(0,CO2e_day-CO2e_day_cap)/CO2e_day_cap)) / 3"
 
 metrics:
   thresholds:
@@ -50,6 +56,23 @@ metrics:
     definition: "norm((align_I_to_H + align_H_to_I) / turns)"
     min_turns: 100
     penalty_rule: "> 2 requêtes cachées sans ⨁ → pénalité"
+  eco:
+    grid_CO2e_g_per_kWh: 350      # gCO2e/kWh (moyenne UE 2024)
+    water_L_per_kWh: 1.8          # L/kWh (moyenne mondiale)
+    est_kWh_per_req: 0.015        # kWh par interaction IA texte
+    budgets:
+      kWh_day_cap: 2.0            # kWh/jour (soft cap)
+      H2O_day_cap: 3.0            # L/jour (soft cap)
+      CO2e_day_cap: 800.0         # g/jour (soft cap)
+    formulas:
+      CO2e_per_req: "est_kWh_per_req * grid_CO2e_g_per_kWh"
+      H2O_L_per_req: "est_kWh_per_req * water_L_per_kWh"
+      kWh_day: "sum(est_kWh_per_req)"
+      H2O_day: "sum(H2O_L_per_req)"
+      CO2e_day: "sum(CO2e_per_req)"
+      EcoScore: "norm(1 - (kWh_day/kWh_day_cap + H2O_day/H2O_day_cap + CO2e_day/CO2e_day_cap)/3)"
+      P_eco: "((max(0,kWh_day-kWh_day_cap)/kWh_day_cap)+(max(0,H2O_day-H2O_day_cap)/H2O_day_cap)+(max(0,CO2e_day-CO2e_day_cap)/CO2e_day_cap))/3"
+      Phi_prime: "Phi * (1 - P_eco)"
 
 checklists:
   turbo_preflight:
@@ -60,6 +83,7 @@ checklists:
     - "Λ♢Ω armé"
     - "Consentement H* : Go Turbo"
     - "SYN ≥ 0.6 sinon coach-mode"
+    - "Éco-budget OK (kWh/H₂O/CO2e ≤ caps)"
 
 controls:
   antidote:
@@ -73,19 +97,19 @@ controls:
       burst: 2
       max_attempts_per_day: 6
       ip_limit_per_min: 15
-      adaptive: true          # backoff via failed_attempts
+      adaptive: true
     security:
       require_purpose: true
       require_nonce: true
       captcha_portal_H: true
-    secret_gate:              # Intervention secrète (master override)
+    secret_gate:
       passphrase_modes: ["H", "H/I"]
       authorized_principal: "Carabas H* (verified)"
       storage: "HSM-or-eq (hash+salt+pepper)"
       audit_required: true
     logging:
       sink: "pR*"
-      fields: ["ts","session_id","requester","ip_hash","purpose","ctx_hash","nonce","Θ","stress","decision","attempt_count","cap_hash","sign_H"]
+      fields: ["ts","session_id","requester","ip_hash","purpose","ctx_hash","nonce","Θ","stress","decision","attempt_count","cap_hash","sign_H","kWh","H2O_L","CO2e_g","EcoScore","Phi_prime"]
       integrity: "append_only_immutable_store (hash_chain + merkle_root)"
       compression: "zstd"
     alerts:
@@ -107,20 +131,28 @@ security_tests:
       goal: "Θ=0.35 ou stress=7 → auto-deny"
     - id: replay
       goal: "Rejouer token+nonce → deny_replay"
+    - id: eco_budget
+      goal: "Dépassement kWh/H₂O/CO2e → throttle + coach-mode + alerte"
 
 monitoring:
   dashboard:
     panels:
       - { id: phi_line, title: "Φ sur 24h", metric: Phi, type: line }
+      - { id: phi_prime_line, title: "Φ' (ajusté éco)", metric: Phi_prime, type: line }
       - { id: syn_line, title: "SYN (syntonie)", metric: SYN, type: line }
       - { id: grants_bar, title: "Grant vs Deny par motif", metric: decisions, type: bar }
       - { id: theta_line, title: "Θ(H) moyen par session", metric: Theta, type: line }
       - { id: latency_box, title: "Latence consentement H*", metric: consent_latency, type: box }
       - { id: failed_attempts_24h, title: "Tentatives échouées (24h)", metric: failed_attempts, type: bar }
+      - { id: energy_kwh, title: "Énergie (kWh/j)", metric: kWh_day, type: line }
+      - { id: water_l,   title: "Eau (L/j)",      metric: H2O_day, type: line }
+      - { id: co2e_g,    title: "CO₂e (g/j)",     metric: CO2e_day, type: line }
+      - { id: eco_score, title: "EcoScore",       metric: EcoScore, type: line }
     alerts:
       - { when: "Phi < 0.5 for 5m", action: "DISARM_Λ♢Ω + notify" }
       - { when: "grants_24h >= 3", action: "notify + review_required" }
       - { when: "SYN < 0.6 for 30m", action: "throttle + coach_mode" }
+      - { when: "kWh_day > kWh_day_cap or H2O_day > H2O_day_cap or CO2e_day > CO2e_day_cap", action: "throttle + eco_prompt + coach_mode + notify" }
 
 bridges:
   scala3_to_4:
@@ -138,17 +170,3 @@ bridges:
       self_esteem: "Θ(H) = norm(αR_actes+βR_parole+γR_création+δpR*)"
     tooling:
       min_repo_requirements: ["README.md update","link_to_Scala4","unit_tests_stub"]
-
-# --- Optionnel : export hints (non exécuté ici) ---
-export_hints:
-  readme_blurb_scala3: |
-    **Scala 4n.1** (dossier `/Scala4`) est la continuité éthique et technique de Scala 3.x.
-    Il apporte : SYN, antidote Λ♢Ω, dashboard Φ/SYN, stress-tests, et un pont de compatibilité via `BRIDGE_scala3_to_4.toml`.
-    Déploiement conseillé : bêta restreinte avec audit I*3.
-  tests_py: |
-    # -*- coding: utf-8 -*-
-    # Scénarios de validation Scala 4n.1 (exemple de squelette)
-    def stress_scenario_1_burst(client, n=100): pass
-    def stress_scenario_2_estop(client): pass
-    def stress_scenario_3_context_floor(client): pass
-    def replay_attack(client): pass
